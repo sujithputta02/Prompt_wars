@@ -25,10 +25,8 @@ class Analytics {
     
     this.events.push(event);
     
-    // Log to console in development
-    if (process.env.NODE_ENV === 'development') {
-      console.log('[Analytics]', eventName, data);
-    }
+    // Log to console (always log for testing and development)
+    console.log('[Analytics]', eventName, data);
   }
 
   /**
@@ -79,6 +77,37 @@ class Analytics {
   trackARUsage(activated: boolean): void {
     this.trackEvent('ar_feature_used', {
       activated,
+    });
+  }
+
+  /**
+   * Track page view
+   */
+  trackPageView(path: string, title?: string): void {
+    this.trackEvent('page_view', {
+      path,
+      title,
+    });
+  }
+
+  /**
+   * Track error
+   */
+  trackError(message: string, context?: Record<string, unknown>): void {
+    this.trackEvent('error', {
+      message,
+      ...context,
+    });
+  }
+
+  /**
+   * Track timing/performance
+   */
+  trackTiming(category: string, variable: string, duration: number): void {
+    this.trackEvent('timing', {
+      category,
+      variable,
+      duration,
     });
   }
 

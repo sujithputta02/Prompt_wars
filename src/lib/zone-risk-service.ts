@@ -62,3 +62,32 @@ export const getTimeOfDayRisk = (hour: number): { level: 'day' | 'evening' | 'ni
     return { level: 'night', multiplier: 1.4 };
   }
 };
+
+/**
+ * Get zone risk index for a location string (0-100)
+ * Used for safety score calculation
+ */
+export const getZoneRiskIndex = (location: string): number => {
+  const locationLower = location.toLowerCase();
+
+  // High-risk zones (60-100)
+  const highRiskZones = ['dharavi', 'kurla', 'mankhurd'];
+  if (highRiskZones.some((zone) => locationLower.includes(zone))) {
+    return 70;
+  }
+
+  // Medium-risk zones (30-59)
+  const mediumRiskZones = ['andheri', 'borivali', 'malad'];
+  if (mediumRiskZones.some((zone) => locationLower.includes(zone))) {
+    return 45;
+  }
+
+  // Low-risk zones (0-29)
+  const lowRiskZones = ['bandra', 'juhu', 'powai', 'colaba'];
+  if (lowRiskZones.some((zone) => locationLower.includes(zone))) {
+    return 20;
+  }
+
+  // Default medium risk for unknown zones
+  return 40;
+};
