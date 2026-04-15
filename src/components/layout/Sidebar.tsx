@@ -10,6 +10,8 @@ import { getZoneRisk, getTimeOfDayRisk } from '@/lib/zone-risk-service';
 import { calculateSafetyScore, getRiskLevel } from '@/lib/safety-engine';
 import { generateSafetyExplanation } from '@/lib/ai-provider';
 import { sanitizeLocation } from '@/lib/input-sanitizer';
+import { analytics } from '@/lib/analytics';
+import { cacheManager } from '@/lib/cache-manager';
 
 interface RouteWithScore extends RouteAlternative {
   safetyScore: number;
@@ -31,12 +33,24 @@ const Sidebar: React.FC<SidebarProps> = ({ onRouteSearch }) => {
   const handleSearch = async () => {
     if (!origin || !destination) return;
 
+    const searchStartTime = Date.now();
+
     // Sanitize user inputs to prevent XSS
     const sanitizedOrigin = sanitizeLocation(origin);
     const sanitizedDestination = sanitizeLocation(destination);
 
     if (!sanitizedOrigin || !sanitizedDestination) {
       console.error('Invalid location input');
+      return;
+    }
+
+    // Check cache first
+    const cacheKey = `route:${sanitizedOrigin}:${sanitizedDestination}`;
+    const cachedResult = cacheManager.get<RouteWithScore[]>(cacheKey);
+    
+    if (cachedResult) {
+      setRoutes(cachedResult);
+      analytics.trackEvent('cache_hit', { cacheKey });
       return;
     }
 
@@ -56,6 +70,10 @@ const Sidebar: React.FC<SidebarProps> = ({ onRouteSearch }) => {
         destination: sanitizedDestination,
         travelMode: 'DRIVE',
       });
+
+      // Track analytics
+      analytics.trackRouteSearch(sanitizedOrigin, sanitizedDestination, routeResult.routes.length);
+      analytics.trackPerformance('route_search', Date.now() - searchStartTime);
 
       if (routeResult.error || !routeResult.routes.length) {
         setIsSearching(false);
