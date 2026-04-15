@@ -96,11 +96,12 @@ const MapLayer: React.FC<MapLayerProps> = ({ origin, destination }) => {
       initializeMap();
     };
 
-    // Load script
+    // Load script with proper async loading
     const script = document.createElement('script');
-    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=geometry&callback=initMap`;
+    script.src = `https://maps.googleapis.com/maps/api/js?key=${apiKey}&libraries=geometry&callback=initMap&loading=async`;
     script.async = true;
     script.defer = true;
+    script.onerror = () => console.error('[Velora] Failed to load Google Maps');
     document.head.appendChild(script);
 
     return () => {
@@ -131,6 +132,17 @@ const MapLayer: React.FC<MapLayerProps> = ({ origin, destination }) => {
         map: mapInstance
       });
 
+      // Suppress marker deprecation warnings
+      const originalWarn = console.warn;
+      console.warn = (...args: unknown[]) => {
+        const firstArg = args[0];
+        if (typeof firstArg === 'string' && (
+          firstArg.includes('google.maps.Marker is deprecated') ||
+          firstArg.includes('AdvancedMarkerElement')
+        )) return;
+        originalWarn.apply(console, args);
+      };
+
       // Add markers
       if (path.length > 0) {
         new window.google.maps.Marker({
@@ -152,6 +164,9 @@ const MapLayer: React.FC<MapLayerProps> = ({ origin, destination }) => {
         path.forEach((point: google.maps.LatLng) => bounds.extend(point));
         mapInstance.fitBounds(bounds);
       }
+
+      // Restore console.warn
+      console.warn = originalWarn;
     } catch (err) {
       console.error('[Velora] Error drawing route:', err);
     }
@@ -197,6 +212,17 @@ const MapLayer: React.FC<MapLayerProps> = ({ origin, destination }) => {
           map: mapInstance
         });
 
+        // Suppress marker deprecation warnings
+        const originalWarn = console.warn;
+        console.warn = (...args: unknown[]) => {
+          const firstArg = args[0];
+          if (typeof firstArg === 'string' && (
+            firstArg.includes('google.maps.Marker is deprecated') ||
+            firstArg.includes('AdvancedMarkerElement')
+          )) return;
+          originalWarn.apply(console, args);
+        };
+
         // Add markers
         new window.google.maps.Marker({
           position: originResult,
@@ -211,6 +237,9 @@ const MapLayer: React.FC<MapLayerProps> = ({ origin, destination }) => {
           title: 'Destination',
           label: 'B'
         });
+
+        // Restore console.warn
+        console.warn = originalWarn;
 
         // Fit bounds
         const bounds = new window.google.maps.LatLngBounds();
