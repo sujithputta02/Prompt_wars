@@ -6,12 +6,13 @@ import RouteCard from '../ui/RouteCard';
 import VoiceInput from '../ui/VoiceInput';
 import { fetchRouteAlternatives, RouteAlternative } from '@/lib/routes-service';
 import { fetchWeatherData } from '@/lib/weather-service';
-import { getZoneRisk, getTimeOfDayRisk, getRouteZoneRisk } from '@/lib/zone-risk-service';
+import { getTimeOfDayRisk } from '@/lib/zone-risk-service';
 import { calculateSafetyScore, getRiskLevel } from '@/lib/safety-engine';
-import { generateSafetyExplanation } from '@/lib/ai-provider';
+import { generateSafetyExplanation, getNeighborhoodSafetyProfile } from '@/lib/ai-provider';
 import { sanitizeLocation } from '@/lib/input-sanitizer';
 import { analytics } from '@/lib/analytics';
 import { cacheManager } from '@/lib/cache-manager';
+import { analyzePolyline, Hazard } from '@/lib/polyline-analyzer';
 
 interface RouteWithScore extends RouteAlternative {
   safetyScore: number;
@@ -25,6 +26,7 @@ interface RouteWithScore extends RouteAlternative {
     crimeReports: number;
     accidentReports: number;
   };
+  hazards?: Hazard[];
 }
 
 interface SidebarProps {
@@ -41,59 +43,30 @@ const Sidebar: React.FC<SidebarProps> = ({ onRouteSearch, onRoutesFound, onRoute
   const [routes, setRoutes] = useState<RouteWithScore[]>([]);
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
   const [explanation, setExplanation] = useState('');
+  const [currentTimeRisk, setCurrentTimeRisk] = useState<{ level: 'day' | 'evening' | 'night'; multiplier: number }>({ level: 'day', multiplier: 0.8 });
 
   const getCurrentLocation = async () => {
-    if (!navigator.geolocation) {
-      alert('Geolocation is not supported by your browser');
-      return;
-    }
-
+    if (!navigator.geolocation) return;
     setIsGettingLocation(true);
-
     try {
       const position = await new Promise<GeolocationPosition>((resolve, reject) => {
-        navigator.geolocation.getCurrentPosition(resolve, reject, {
-          enableHighAccuracy: true,
-          timeout: 10000,
-          maximumAge: 0
-        });
+        navigator.geolocation.getCurrentPosition(resolve, reject, { timeout: 10000 });
       });
-
       const { latitude, longitude } = position.coords;
-
-      // Use Google Maps Geocoding API to get address
       const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
       if (apiKey) {
-        try {
-          const response = await fetch(
-            `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latitude},${longitude}&key=${apiKey}`
-          );
-          const data = await response.json();
-          
-          if (data.results && data.results[0]) {
-            setOrigin(data.results[0].formatted_address);
-            analytics.trackEvent('current_location_used', { latitude, longitude });
-          } else {
-            setOrigin(`${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
-          }
-        } catch (error) {
-          console.error('Geocoding error:', error);
+        const response = await fetch(`https://maps.googleapis.com/maps/api/geocode/json?latlng=${latitude},${longitude}&key=${apiKey}`);
+        const data = await response.json();
+        if (data.results && data.results[0]) {
+          setOrigin(data.results[0].formatted_address);
+        } else {
           setOrigin(`${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
         }
       } else {
         setOrigin(`${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
       }
-    } catch (error: any) {
+    } catch (error) {
       console.error('Location error:', error);
-      if (error.code === 1) {
-        alert('Location access denied. Please enable location permissions.');
-      } else if (error.code === 2) {
-        alert('Location unavailable. Please try again.');
-      } else if (error.code === 3) {
-        alert('Location request timed out. Please try again.');
-      } else {
-        alert('Unable to get your location. Please enter manually.');
-      }
     } finally {
       setIsGettingLocation(false);
     }
@@ -101,123 +74,105 @@ const Sidebar: React.FC<SidebarProps> = ({ onRouteSearch, onRoutesFound, onRoute
 
   const handleSearch = async () => {
     if (!origin || !destination) return;
-
-    const searchStartTime = Date.now();
-
-    // Sanitize user inputs to prevent XSS
     const sanitizedOrigin = sanitizeLocation(origin);
     const sanitizedDestination = sanitizeLocation(destination);
+    if (!sanitizedOrigin || !sanitizedDestination) return;
 
-    if (!sanitizedOrigin || !sanitizedDestination) {
-      console.error('Invalid location input');
-      return;
-    }
-
-    // Check cache first
-    const cacheKey = `route:${sanitizedOrigin}:${sanitizedDestination}`;
-    const cachedResult = cacheManager.get<RouteWithScore[]>(cacheKey);
-    
-    if (cachedResult) {
-      setRoutes(cachedResult);
-      analytics.trackEvent('cache_hit', { cacheKey });
-      return;
-    }
-
-    // Notify parent component about the search
-    if (onRouteSearch) {
-      onRouteSearch(sanitizedOrigin, sanitizedDestination);
-    }
-
+    if (onRouteSearch) onRouteSearch(sanitizedOrigin, sanitizedDestination);
     setIsSearching(true);
     setRoutes([]);
     setExplanation('');
 
     try {
-      // Fetch routes
-      const routeResult = await fetchRouteAlternatives({
-        origin: sanitizedOrigin,
-        destination: sanitizedDestination,
-        travelMode: 'DRIVE',
-      });
-
-      // Track analytics
-      analytics.trackRouteSearch(sanitizedOrigin, sanitizedDestination, routeResult.routes.length);
-      analytics.trackPerformance('route_search', Date.now() - searchStartTime);
-
+      const routeResult = await fetchRouteAlternatives({ origin: sanitizedOrigin, destination: sanitizedDestination, travelMode: 'DRIVE' });
       if (routeResult.error || !routeResult.routes.length) {
         setIsSearching(false);
         return;
       }
 
-      // Fetch weather data (using mock coordinates for demo)
-      const weatherData = await fetchWeatherData(19.0760, 72.8777); // Mumbai coordinates
-
-      // Get zone risk
-      const zoneRisk = await getZoneRisk(19.0760, 72.8777);
-
-      // Get time of day risk
+      // Get weather for the origin of the first route
+      let weatherOrigin = { lat: 19.0760, lng: 72.8777 }; // Default Mumbai
+      try {
+        if (routeResult.routes[0]?.polyline) {
+          const path = window.google.maps.geometry.encoding.decodePath(routeResult.routes[0].polyline);
+          if (path && path.length > 0) {
+            const lat = path[0].lat();
+            const lng = path[0].lng();
+            // Validate coordinates are within world bounds before calling Weather API
+            if (lat >= -90 && lat <= 90 && lng >= -180 && lng <= 180) {
+              weatherOrigin = { lat, lng };
+            }
+          }
+        }
+      } catch (e) { 
+        console.warn('[Velora] Weather coordinate extraction failed, using tactical default.'); 
+      }
+      
+      const weatherData = await fetchWeatherData(weatherOrigin.lat, weatherOrigin.lng);
       const now = new Date();
       const timeRisk = getTimeOfDayRisk(now.getHours());
+      setCurrentTimeRisk(timeRisk);
 
-      // Score each route with route-specific zone risks
+      // PERFORM AI SAFETY AUDIT for the route neighborhoods
+      // For MVP, we use origin and destination as our neighborhood focus
+      const safetyProfiles = await getNeighborhoodSafetyProfile([sanitizedOrigin, sanitizedDestination]);
+
       const scoredRoutes: RouteWithScore[] = await Promise.all(
         routeResult.routes.map(async (route, index) => {
-          // Get route-specific zone risk (different for each route)
-          const routeZoneRisk = await getRouteZoneRisk(index);
+          // Pass real-time incidents and AI profiles to the analyzer
+          const polylineAnalysis = analyzePolyline(route.polyline, route.incidents, safetyProfiles);
           
-          const safetyScore = calculateSafetyScore({
-            congestionLevel: route.congestionLevel,
-            zoneRiskIndex: routeZoneRisk.riskIndex,
-            timeOfDay: timeRisk.level,
-            weatherSeverity: weatherData.severity,
-            complexity: route.complexity,
+          const zoneRiskIndex = polylineAnalysis.crimeRisk === 'High' ? 70 : polylineAnalysis.crimeRisk === 'Medium' ? 45 : 20;
+          const safetyScore = calculateSafetyScore({ 
+            congestionLevel: route.congestionLevel, 
+            zoneRiskIndex, 
+            timeOfDay: timeRisk.level, 
+            weatherSeverity: weatherData.severity, 
+            complexity: route.complexity 
           });
-
           const riskLevel = getRiskLevel(safetyScore);
-
-          const explanation = await generateSafetyExplanation(
-            route.name,
-            safetyScore,
-            riskLevel,
-            {
-              congestion: route.congestionLevel > 50 ? 'Heavy' : 'Light',
-              weather: weatherData.condition,
-              zone: routeZoneRisk.areaName,
+          
+          let explanationText = `Tactical route verified for current ${riskLevel} risk environment.`;
+          if (index < 2) {
+            try {
+              explanationText = await generateSafetyExplanation(
+                `Route ${String.fromCharCode(65 + index)}`,
+                safetyScore,
+                riskLevel,
+                { 
+                  congestion: route.congestionLevel > 60 ? 'Heavy' : route.congestionLevel > 30 ? 'Moderate' : 'Light', 
+                  weather: weatherData.condition, 
+                  zone: polylineAnalysis.areaName 
+                }
+              );
+            } catch (aiErr) {
+              console.warn('AI Explanation failed for route', index);
             }
-          );
+          }
 
-          return {
-            ...route,
-            safetyScore,
-            riskLevel,
-            explanation,
-            weatherCondition: weatherData.condition,
-            theftRisk: routeZoneRisk.theftRisk,
-            accidentZone: routeZoneRisk.accidentZone,
-            zoneRiskData: {
-              areaName: routeZoneRisk.areaName,
-              crimeReports: routeZoneRisk.crimeReports,
-              accidentReports: routeZoneRisk.accidentReports,
-            },
+          return { 
+            ...route, 
+            safetyScore, 
+            riskLevel, 
+            explanation: explanationText, 
+            weatherCondition: weatherData.condition, 
+            theftRisk: polylineAnalysis.crimeRisk, 
+            accidentZone: polylineAnalysis.accidentZone, 
+            hazards: polylineAnalysis.hazards,
+            zoneRiskData: { 
+              areaName: polylineAnalysis.areaName, 
+              crimeReports: polylineAnalysis.crimeReports, 
+              accidentReports: polylineAnalysis.accidentReports 
+            } 
           };
         })
       );
 
-      // Sort by safety score (highest first)
       scoredRoutes.sort((a, b) => b.safetyScore - a.safetyScore);
-
       setRoutes(scoredRoutes);
       setSelectedRouteId(scoredRoutes[0]?.id || null);
-
-      // Notify parent about routes
-      if (onRoutesFound) {
-        onRoutesFound(scoredRoutes);
-      }
-
-      // Set explanation for top route
-      if (scoredRoutes.length > 0) {
-        setExplanation(scoredRoutes[0].explanation);
-      }
+      if (onRoutesFound) onRoutesFound(scoredRoutes);
+      if (scoredRoutes.length > 0) setExplanation(scoredRoutes[0].explanation);
     } catch (error) {
       console.error('Search error:', error);
     } finally {
@@ -228,142 +183,133 @@ const Sidebar: React.FC<SidebarProps> = ({ onRouteSearch, onRoutesFound, onRoute
   const handleRouteSelect = (route: RouteWithScore) => {
     setSelectedRouteId(route.id);
     setExplanation(route.explanation);
-    if (onRouteSelect) {
-      onRouteSelect(route);
-    }
+    if (onRouteSelect) onRouteSelect(route);
   };
 
   return (
-    <div className="flex flex-col h-full p-8 space-y-8">
-      {/* Header */}
-      <div className="space-y-2">
-        <div className="flex items-center gap-3">
-          <div className="p-2 bg-accent rounded-lg">
-            <ShieldCheck className="w-6 h-6 text-background" />
+    <div className="flex flex-col h-full p-10 space-y-10 bg-[#0B0D11]/40 backdrop-blur-3xl border-r border-white/5 shadow-2xl overflow-hidden">
+      {/* Premium Header */}
+      <div className="space-y-1 animate-fade-up">
+        <div className="flex items-center gap-4">
+          <div className="p-3 bg-accent rounded-2xl shadow-[0_0_20px_rgba(212,175,55,0.3)]">
+            <ShieldCheck className="w-8 h-8 text-background" />
           </div>
-          <h1 className="text-3xl font-bold tracking-tighter">Velora</h1>
+          <div>
+            <h1 className="text-4xl font-black tracking-[-0.05em] text-white">VELORA</h1>
+            <p className="text-[10px] font-bold text-accent tracking-[0.4em] uppercase opacity-80">SafeRoute AI</p>
+          </div>
         </div>
-        <p className="text-sm font-medium opacity-60 uppercase tracking-widest pl-11">SafeRoute Intelligence</p>
       </div>
 
-      {/* Search Section */}
-      <div className="space-y-4">
-        <div className="space-y-2 relative">
-          <div className="absolute left-4 top-1/2 -translate-y-1/2 opacity-40 z-10">
-            <MapPin className="w-4 h-4" />
-          </div>
-          <input
-            type="text"
-            placeholder="Search Origin..."
-            className="w-full bg-[rgba(255,255,255,0.05)] border border-[rgba(255,255,255,0.1)] rounded-2xl py-4 pl-12 pr-12 focus:outline-none focus:border-accent transition-all font-sans"
-            value={origin}
-            onChange={(e) => setOrigin(e.target.value)}
-          />
-          <button
-            onClick={getCurrentLocation}
-            disabled={isGettingLocation}
-            className="absolute right-3 top-1/2 -translate-y-1/2 p-2 hover:bg-accent/20 rounded-lg transition-all group"
-            title="Use current location"
-          >
-            {isGettingLocation ? (
-              <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
-            ) : (
-              <Navigation className="w-4 h-4 text-accent group-hover:scale-110 transition-transform" />
-            )}
-          </button>
-        </div>
-
-        <div className="space-y-2 relative">
-          <div className="absolute left-4 top-1/2 -translate-y-1/2 opacity-40">
-            <Navigation className="w-4 h-4 text-accent" />
-          </div>
-          <input
-            type="text"
-            placeholder="Search Destination..."
-            className="w-full bg-[rgba(255,255,255,0.05)] border border-[rgba(255,255,255,0.1)] rounded-2xl py-4 pl-12 pr-16 focus:outline-none focus:border-accent transition-all font-sans"
-            value={destination}
-            onChange={(e) => setDestination(e.target.value)}
-          />
-          <div className="absolute right-4 top-1/2 -translate-y-1/2">
-            <VoiceInput onResult={(text: string) => setDestination(text)} />
+      {/* Integrated Search Module */}
+      <div className="space-y-4 animate-fade-up [animation-delay:200ms]">
+        <div className="relative group">
+          <div className="absolute inset-0 bg-accent/5 rounded-3xl blur-xl group-focus-within:bg-accent/10 transition-all" />
+          <div className="relative glass-morphism rounded-3xl overflow-hidden border-white/5 focus-within:border-accent/40 transition-all">
+            <div className="flex items-center px-6 py-5 gap-4">
+              <MapPin className="w-5 h-5 text-accent/40" />
+              <input
+                type="text"
+                placeholder="CURRENT LOCATION"
+                className="bg-transparent border-none focus:outline-none w-full text-sm font-bold tracking-widest uppercase placeholder:text-white/20"
+                value={origin}
+                onChange={(e) => setOrigin(e.target.value)}
+              />
+              <button onClick={getCurrentLocation} className="p-2 hover:bg-accent/20 rounded-xl transition-all">
+                {isGettingLocation ? <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" /> : <Navigation className="w-4 h-4 text-accent" />}
+              </button>
+            </div>
+            <div className="h-px bg-white/5 mx-6" />
+            <div className="flex items-center px-6 py-5 gap-4">
+              <Navigation className="w-5 h-5 text-accent" />
+              <input
+                type="text"
+                placeholder="DESTINATION"
+                className="bg-transparent border-none focus:outline-none w-full text-sm font-bold tracking-widest uppercase placeholder:text-white/20"
+                value={destination}
+                onChange={(e) => setDestination(e.target.value)}
+              />
+              <VoiceInput onResult={(text) => setDestination(text)} />
+            </div>
           </div>
         </div>
 
         <button
           onClick={handleSearch}
           disabled={isSearching}
-          className="w-full bg-accent text-background font-bold py-4 rounded-2xl hover:opacity-90 transition-all flex items-center justify-center gap-2 group"
+          className="w-full relative group overflow-hidden bg-accent text-background font-black py-6 rounded-3xl hover:shadow-[0_0_30px_rgba(212,175,55,0.4)] transition-all active:scale-[0.98]"
         >
-          {isSearching ? (
-            <div className="w-6 h-6 border-2 border-background border-t-transparent rounded-full animate-spin" />
-          ) : (
-            <div className="flex items-center gap-2">
-              Explore Smart Routes
-              <div className="group-hover:translate-x-1 transition-transform">
-                <Search className="w-5 h-5" />
-              </div>
-            </div>
-          )}
+          <div className="relative z-10 flex items-center justify-center gap-3 tracking-[0.1em] uppercase">
+            {isSearching ? (
+              <>
+                <div className="w-5 h-5 border-2 border-background border-t-transparent rounded-full animate-spin" />
+                ANALYZING ROUTES...
+              </>
+            ) : (
+              <>
+                CALCULATE OPTIMAL PATH
+                <Search className="w-5 h-5 group-hover:translate-x-1 transition-transform" />
+              </>
+            )}
+          </div>
+          <div className="absolute inset-0 bg-white/20 translate-y-full group-hover:translate-y-0 transition-transform duration-500" />
         </button>
       </div>
 
-      {/* Results Section */}
-      <div className="flex-1 overflow-y-auto space-y-6 -mx-2 px-2">
+      {/* Results Container */}
+      <div className="flex-1 overflow-y-auto space-y-8 pr-2 custom-scrollbar">
+        {isSearching && (
+          <div className="space-y-6 animate-pulse">
+            {[1, 2, 3].map(i => (
+              <div key={i} className="h-32 bg-white/5 rounded-3xl border border-white/5" />
+            ))}
+          </div>
+        )}
+
         {routes.length > 0 && (
-          <>
+          <div className="space-y-10 animate-fade-up">
+            {/* AI Insights Section */}
             <div className="space-y-4">
-              <div className="flex items-center justify-between">
-                <h3 className="text-lg font-semibold italic text-accent opacity-90">AI Synthesis</h3>
-                <Info className="w-4 h-4 opacity-40" />
+              <div className="flex items-center justify-between px-2">
+                <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-accent/60">Velora Intelligence</h3>
+                <div className="w-2 h-2 rounded-full bg-accent animate-pulse" />
               </div>
-              
-              <div className="glass-morphism p-6 rounded-3xl space-y-3 relative overflow-hidden group">
-                <div className="absolute top-0 left-0 w-1 h-full bg-accent opacity-40" />
-                <p className="text-sm leading-relaxed italic opacity-90">
-                  {explanation || 'Analyzing routes...'}
-                </p>
-                <div className="flex items-center gap-2 text-[10px] font-bold text-accent uppercase tracking-widest pt-2">
-                  <div className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
-                  Gemini Insight Engine
+              <div className="relative group">
+                <div className="absolute -inset-0.5 bg-gradient-to-r from-accent/20 to-transparent rounded-3xl opacity-50 blur" />
+                <div className="relative glass-morphism p-8 rounded-3xl border-white/10 bg-black/40">
+                  <p className="text-base leading-relaxed italic text-white/90 font-serif">
+                    " {explanation} "
+                  </p>
                 </div>
               </div>
             </div>
 
-            <div className="space-y-4">
-              <h3 className="text-lg font-semibold">Recommended Paths</h3>
-              <div className="space-y-4 pb-8">
+            {/* Path Selection */}
+            <div className="space-y-6">
+              <h3 className="text-[10px] font-black uppercase tracking-[0.3em] text-accent/60 px-2">Validated Paths</h3>
+              <div className="space-y-6 pb-20">
                 {routes.map((route, index) => (
-                  <RouteCard
-                    key={route.id}
-                    name={route.name}
-                    safetyScore={route.safetyScore}
-                    eta={route.eta}
-                    risk={route.riskLevel}
-                    isRecommended={index === 0}
-                    isSelected={route.id === selectedRouteId}
-                    onClick={() => handleRouteSelect(route)}
-                    congestionLevel={route.congestionLevel}
-                    complexity={route.complexity}
-                    weatherCondition={route.weatherCondition}
-                    theftRisk={route.theftRisk}
-                    accidentZone={route.accidentZone}
-                    zoneRiskData={route.zoneRiskData}
-                  />
+                  <div key={route.id} className="animate-fade-up" style={{ animationDelay: `${(index + 3) * 150}ms` }}>
+                    <RouteCard
+                      {...route}
+                      risk={route.riskLevel}
+                      isRecommended={index === 0}
+                      isSelected={route.id === selectedRouteId}
+                      onClick={() => handleRouteSelect(route)}
+                    />
+                  </div>
                 ))}
               </div>
             </div>
-          </>
-        )}
-
-        {!isSearching && routes.length === 0 && (origin || destination) && (
-          <div className="flex flex-col items-center justify-center py-12 text-center opacity-60">
-            <p className="text-sm">No routes found. Try different locations.</p>
           </div>
         )}
 
-        {!isSearching && routes.length === 0 && !origin && !destination && (
-          <div className="flex flex-col items-center justify-center py-12 text-center opacity-60">
-            <p className="text-sm">Enter origin and destination to get started</p>
+        {!isSearching && routes.length === 0 && (
+          <div className="flex flex-col items-center justify-center py-20 text-center animate-fade-up">
+            <div className="w-20 h-20 rounded-full border border-white/5 flex items-center justify-center mb-6 opacity-20">
+              <Navigation className="w-8 h-8" />
+            </div>
+            <p className="text-[10px] font-bold uppercase tracking-[0.4em] opacity-40">Awaiting Search Parameters</p>
           </div>
         )}
       </div>

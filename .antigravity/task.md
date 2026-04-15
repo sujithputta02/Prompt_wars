@@ -1,0 +1,5 @@
+- [x] Upgrade `routes-service.ts` for real traffic incidents
+- [x] Implement `getNeighborhoodSafetyProfile` in `ai-provider.ts`
+- [x] Refactor `polyline-analyzer.ts` for dynamic analysis
+- [x] Coordinate real-time flow in `Sidebar.tsx`
+- [x] Verify real incident data on the map

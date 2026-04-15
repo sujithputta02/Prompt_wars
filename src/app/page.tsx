@@ -6,6 +6,7 @@ import Sidebar from '@/components/layout/Sidebar';
 import ARTeaser from '@/components/ui/ARTeaser';
 import SkipToContent from '@/components/ui/SkipToContent';
 import ClientOnly from '@/components/ClientOnly';
+import EmergencyModal from '@/components/ui/EmergencyModal';
 
 interface RouteWithScore {
   id: string;
@@ -25,6 +26,8 @@ export default function Home() {
   const [destination, setDestination] = useState('');
   const [routes, setRoutes] = useState<RouteWithScore[]>([]);
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
+  const [showEmergency, setShowEmergency] = useState(false);
+  const [userLocation, setUserLocation] = useState<{ lat: number; lng: number } | undefined>();
 
   const handleRoutesFound = (foundRoutes: RouteWithScore[]) => {
     setRoutes(foundRoutes);
@@ -33,6 +36,27 @@ export default function Home() {
 
   const handleRouteSelect = (route: RouteWithScore) => {
     setSelectedRouteId(route.id);
+  };
+
+  const handleEmergency = () => {
+    // Get user's current location
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          setUserLocation({
+            lat: position.coords.latitude,
+            lng: position.coords.longitude
+          });
+          setShowEmergency(true);
+        },
+        () => {
+          // If location fails, still show emergency modal
+          setShowEmergency(true);
+        }
+      );
+    } else {
+      setShowEmergency(true);
+    }
   };
 
   const mapRoutes = routes.map((route, index) => ({
@@ -52,6 +76,7 @@ export default function Home() {
           destination={destination}
           routes={mapRoutes}
           selectedRouteId={selectedRouteId}
+          onEmergency={handleEmergency}
         >
           <Sidebar 
             onRouteSearch={(orig, dest) => {
@@ -63,7 +88,15 @@ export default function Home() {
           />
         </DashboardContainer>
         
-        <ARTeaser />
+        <ARTeaser 
+          selectedRoute={routes.find(r => r.id === selectedRouteId)} 
+        />
+        
+        <EmergencyModal 
+          isOpen={showEmergency}
+          onClose={() => setShowEmergency(false)}
+          userLocation={userLocation}
+        />
       </main>
     </ClientOnly>
   );

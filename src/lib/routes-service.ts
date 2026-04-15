@@ -11,6 +11,12 @@ export interface RouteAlternative {
   polyline: string;
   congestionLevel: number;
   complexity: number;
+  incidents?: Array<{
+    type: string;
+    description: string;
+    lat: number;
+    lng: number;
+  }>;
 }
 
 export interface RouteSearchParams {
@@ -46,7 +52,7 @@ export const fetchRouteAlternatives = async (
         headers: {
           'Content-Type': 'application/json',
           'X-Goog-Api-Key': apiKey,
-          'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters,routes.polyline.encodedPolyline,routes.legs',
+          'X-Goog-FieldMask': 'routes.duration,routes.distanceMeters,routes.polyline,routes.legs,routes.travelAdvisory',
         },
         body: JSON.stringify({
           origin: { address: params.origin },
@@ -79,7 +85,7 @@ export const fetchRouteAlternatives = async (
 };
 
 /**
- * Parse Google Routes API response into our format
+ * Parse Google Routes API response into our format with real traffic data
  */
 const parseGoogleRoutesResponse = (data: any): RouteSearchResult => {
   if (!data.routes || data.routes.length === 0) {
@@ -95,10 +101,40 @@ const parseGoogleRoutesResponse = (data: any): RouteSearchResult => {
     const durationSeconds = parseInt(duration.replace('s', ''));
     const minutes = Math.ceil(durationSeconds / 60);
 
-    // Estimate congestion from traffic info with variation
-    const baseCongestion = estimateCongestion(leg);
-    // Add variation based on route index to differentiate routes
-    const congestionLevel = Math.max(0, Math.min(100, baseCongestion + (index * 15)));
+    // Extract REAL congestion from Google's traffic data
+    let congestionLevel = 30; // Default moderate
+    
+    // Google provides staticDuration (no traffic) and duration (with traffic)
+    if (leg.staticDuration && leg.duration) {
+      const staticSeconds = parseInt(leg.staticDuration.replace('s', ''));
+      const actualSeconds = parseInt(leg.duration.replace('s', ''));
+      
+      // Calculate congestion based on delay
+      const delayRatio = (actualSeconds - staticSeconds) / staticSeconds;
+      
+      if (delayRatio > 0.5) {
+        congestionLevel = 80; // Heavy traffic (50%+ delay)
+      } else if (delayRatio > 0.25) {
+        congestionLevel = 60; // Moderate-heavy traffic (25-50% delay)
+      } else if (delayRatio > 0.1) {
+        congestionLevel = 40; // Light-moderate traffic (10-25% delay)
+      } else {
+        congestionLevel = 20; // Light traffic (<10% delay)
+      }
+    }
+    
+    // Extract real incidents if available in travelAdvisory
+    const incidents: NonNullable<RouteAlternative['incidents']> = [];
+    if (route.travelAdvisory?.trafficIncidents) {
+      route.travelAdvisory.trafficIncidents.forEach((inc: any) => {
+        incidents.push({
+          type: inc.type || 'HAZARD',
+          description: inc.description || 'Road incident reported',
+          lat: inc.location?.latLng?.latitude || 0,
+          lng: inc.location?.latLng?.longitude || 0
+        });
+      });
+    }
 
     return {
       id: `route-${index}`,
@@ -108,6 +144,7 @@ const parseGoogleRoutesResponse = (data: any): RouteSearchResult => {
       polyline: route.polyline?.encodedPolyline || '',
       congestionLevel,
       complexity: estimateComplexity(leg),
+      incidents
     };
   });
 
