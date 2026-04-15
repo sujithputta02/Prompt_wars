@@ -12,9 +12,33 @@ interface RouteCardProps {
   isRecommended?: boolean;
   onClick?: () => void;
   isSelected?: boolean;
+  congestionLevel?: number;
+  complexity?: number;
+  weatherCondition?: string;
+  theftRisk?: 'Low' | 'Medium' | 'High';
+  accidentZone?: boolean;
+  zoneRiskData?: {
+    areaName: string;
+    crimeReports: number;
+    accidentReports: number;
+  };
 }
 
-const RouteCard: React.FC<RouteCardProps> = ({ name, safetyScore, eta, risk, isRecommended, onClick, isSelected }) => {
+const RouteCard: React.FC<RouteCardProps> = ({ 
+  name, 
+  safetyScore, 
+  eta, 
+  risk, 
+  isRecommended, 
+  onClick, 
+  isSelected, 
+  congestionLevel = 0, 
+  complexity = 0, 
+  weatherCondition = 'Clear',
+  theftRisk = 'Low',
+  accidentZone = false,
+  zoneRiskData
+}) => {
   const getRiskColor = (r: string) => {
     switch (r) {
       case 'Low': return 'text-green-400';
@@ -23,6 +47,42 @@ const RouteCard: React.FC<RouteCardProps> = ({ name, safetyScore, eta, risk, isR
       default: return 'text-zinc-400';
     }
   };
+
+  const getTheftRiskColor = (r: string) => {
+    switch (r) {
+      case 'Low': return 'text-green-400 bg-green-400/10 border-green-400/20';
+      case 'Medium': return 'text-yellow-400 bg-yellow-400/10 border-yellow-400/20';
+      case 'High': return 'text-red-400 bg-red-400/10 border-red-400/20';
+      default: return 'text-zinc-400 bg-zinc-400/10 border-zinc-400/20';
+    }
+  };
+
+  // Generate dynamic conditions based on route data
+  const getTrafficCondition = () => {
+    if (congestionLevel < 30) return 'Light traffic';
+    if (congestionLevel < 60) return 'Moderate traffic';
+    return 'Heavy traffic';
+  };
+
+  const getComplexityCondition = () => {
+    if (complexity < 40) return 'Simple route';
+    if (complexity < 70) return 'Few turns';
+    return 'Complex route';
+  };
+
+  // Format weather condition to be concise
+  const getWeatherDisplay = () => {
+    const weather = weatherCondition.toLowerCase();
+    if (weather.includes('clear') || weather.includes('sunny')) return '☀️ Clear';
+    if (weather.includes('cloud')) return '☁️ Cloudy';
+    if (weather.includes('rain')) return '🌧️ Rainy';
+    if (weather.includes('storm') || weather.includes('thunder')) return '⛈️ Stormy';
+    if (weather.includes('snow')) return '❄️ Snowy';
+    if (weather.includes('fog') || weather.includes('mist')) return '🌫️ Foggy';
+    return weatherCondition;
+  };
+
+  const conditions = `${getTrafficCondition()} • ${getWeatherDisplay()}`;
 
   return (
     <div 
@@ -63,9 +123,33 @@ const RouteCard: React.FC<RouteCardProps> = ({ name, safetyScore, eta, risk, isR
             <div className="w-px h-10 bg-card-border" />
             <div className="flex flex-col flex-1">
               <span className="text-[10px] font-bold uppercase opacity-40 tracking-wider">Conditions</span>
-              <span className="text-xs font-medium mt-1 truncate">Clear traffic • Well lit</span>
+              <span className="text-xs font-medium mt-1 truncate">{conditions}</span>
             </div>
           </div>
+
+          {/* Theft Risk & Accident Zone Warnings */}
+          {(theftRisk !== 'Low' || accidentZone) && (
+            <div className="flex flex-wrap gap-2 pt-2">
+              {theftRisk !== 'Low' && (
+                <div className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] font-bold ${getTheftRiskColor(theftRisk)}`}>
+                  <span>🚨</span>
+                  <span>{theftRisk} Theft Risk</span>
+                  {zoneRiskData && (
+                    <span className="opacity-60">({zoneRiskData.crimeReports} reports)</span>
+                  )}
+                </div>
+              )}
+              {accidentZone && (
+                <div className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border text-[10px] font-bold text-orange-400 bg-orange-400/10 border-orange-400/20">
+                  <span>⚠️</span>
+                  <span>Accident Zone</span>
+                  {zoneRiskData && (
+                    <span className="opacity-60">({zoneRiskData.accidentReports} reports)</span>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="flex flex-col items-center justify-between h-full pl-4 border-l border-card-border ml-4">

@@ -95,8 +95,10 @@ const parseGoogleRoutesResponse = (data: any): RouteSearchResult => {
     const durationSeconds = parseInt(duration.replace('s', ''));
     const minutes = Math.ceil(durationSeconds / 60);
 
-    // Estimate congestion from traffic info
-    const congestionLevel = estimateCongestion(leg);
+    // Estimate congestion from traffic info with variation
+    const baseCongestion = estimateCongestion(leg);
+    // Add variation based on route index to differentiate routes
+    const congestionLevel = Math.max(0, Math.min(100, baseCongestion + (index * 15)));
 
     return {
       id: `route-${index}`,
@@ -131,36 +133,37 @@ const estimateComplexity = (leg: any): number => {
 };
 
 /**
- * Mock routes for demo/MVP
+ * Mock routes for demo/MVP with varied characteristics
  */
 const getMockRoutes = (params: RouteSearchParams): RouteSearchResult => {
+  // Generate varied routes with different characteristics
   const routes: RouteAlternative[] = [
     {
       id: 'route-0',
-      name: 'Route Alpha',
+      name: 'Route A',
       eta: '18 min',
       distance: '8.2 km',
-      polyline: '',
-      congestionLevel: 25,
+      polyline: 'mock-polyline-a',
+      congestionLevel: 25, // Low congestion - should score high
       complexity: 35,
     },
     {
       id: 'route-1',
-      name: 'Express Path',
+      name: 'Route B',
       eta: '14 min',
       distance: '7.5 km',
-      polyline: '',
-      congestionLevel: 65,
-      complexity: 28,
+      polyline: 'mock-polyline-b',
+      congestionLevel: 75, // High congestion - should score lower
+      complexity: 45,
     },
     {
       id: 'route-2',
-      name: 'Scenic Route',
+      name: 'Route C',
       eta: '22 min',
       distance: '9.1 km',
-      polyline: '',
-      congestionLevel: 15,
-      complexity: 42,
+      polyline: 'mock-polyline-c',
+      congestionLevel: 50, // Medium congestion - should score medium
+      complexity: 60,
     },
   ];
 

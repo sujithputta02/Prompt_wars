@@ -6,7 +6,7 @@ import RouteCard from '../ui/RouteCard';
 import VoiceInput from '../ui/VoiceInput';
 import { fetchRouteAlternatives, RouteAlternative } from '@/lib/routes-service';
 import { fetchWeatherData } from '@/lib/weather-service';
-import { getZoneRisk, getTimeOfDayRisk } from '@/lib/zone-risk-service';
+import { getZoneRisk, getTimeOfDayRisk, getRouteZoneRisk } from '@/lib/zone-risk-service';
 import { calculateSafetyScore, getRiskLevel } from '@/lib/safety-engine';
 import { generateSafetyExplanation } from '@/lib/ai-provider';
 import { sanitizeLocation } from '@/lib/input-sanitizer';
@@ -17,6 +17,14 @@ interface RouteWithScore extends RouteAlternative {
   safetyScore: number;
   riskLevel: 'Low' | 'Medium' | 'High';
   explanation: string;
+  weatherCondition?: string;
+  theftRisk?: 'Low' | 'Medium' | 'High';
+  accidentZone?: boolean;
+  zoneRiskData?: {
+    areaName: string;
+    crimeReports: number;
+    accidentReports: number;
+  };
 }
 
 interface SidebarProps {
@@ -151,12 +159,15 @@ const Sidebar: React.FC<SidebarProps> = ({ onRouteSearch, onRoutesFound, onRoute
       const now = new Date();
       const timeRisk = getTimeOfDayRisk(now.getHours());
 
-      // Score each route
+      // Score each route with route-specific zone risks
       const scoredRoutes: RouteWithScore[] = await Promise.all(
-        routeResult.routes.map(async (route) => {
+        routeResult.routes.map(async (route, index) => {
+          // Get route-specific zone risk (different for each route)
+          const routeZoneRisk = await getRouteZoneRisk(index);
+          
           const safetyScore = calculateSafetyScore({
             congestionLevel: route.congestionLevel,
-            zoneRiskIndex: zoneRisk.riskIndex,
+            zoneRiskIndex: routeZoneRisk.riskIndex,
             timeOfDay: timeRisk.level,
             weatherSeverity: weatherData.severity,
             complexity: route.complexity,
@@ -171,7 +182,7 @@ const Sidebar: React.FC<SidebarProps> = ({ onRouteSearch, onRoutesFound, onRoute
             {
               congestion: route.congestionLevel > 50 ? 'Heavy' : 'Light',
               weather: weatherData.condition,
-              zone: zoneRisk.areaName,
+              zone: routeZoneRisk.areaName,
             }
           );
 
@@ -180,6 +191,14 @@ const Sidebar: React.FC<SidebarProps> = ({ onRouteSearch, onRoutesFound, onRoute
             safetyScore,
             riskLevel,
             explanation,
+            weatherCondition: weatherData.condition,
+            theftRisk: routeZoneRisk.theftRisk,
+            accidentZone: routeZoneRisk.accidentZone,
+            zoneRiskData: {
+              areaName: routeZoneRisk.areaName,
+              crimeReports: routeZoneRisk.crimeReports,
+              accidentReports: routeZoneRisk.accidentReports,
+            },
           };
         })
       );
@@ -323,6 +342,12 @@ const Sidebar: React.FC<SidebarProps> = ({ onRouteSearch, onRoutesFound, onRoute
                     isRecommended={index === 0}
                     isSelected={route.id === selectedRouteId}
                     onClick={() => handleRouteSelect(route)}
+                    congestionLevel={route.congestionLevel}
+                    complexity={route.complexity}
+                    weatherCondition={route.weatherCondition}
+                    theftRisk={route.theftRisk}
+                    accidentZone={route.accidentZone}
+                    zoneRiskData={route.zoneRiskData}
                   />
                 ))}
               </div>
