@@ -27,8 +27,66 @@ const Sidebar: React.FC<SidebarProps> = ({ onRouteSearch }) => {
   const [origin, setOrigin] = useState('');
   const [destination, setDestination] = useState('');
   const [isSearching, setIsSearching] = useState(false);
+  const [isGettingLocation, setIsGettingLocation] = useState(false);
   const [routes, setRoutes] = useState<RouteWithScore[]>([]);
   const [explanation, setExplanation] = useState('');
+
+  const getCurrentLocation = async () => {
+    if (!navigator.geolocation) {
+      alert('Geolocation is not supported by your browser');
+      return;
+    }
+
+    setIsGettingLocation(true);
+
+    try {
+      const position = await new Promise<GeolocationPosition>((resolve, reject) => {
+        navigator.geolocation.getCurrentPosition(resolve, reject, {
+          enableHighAccuracy: true,
+          timeout: 10000,
+          maximumAge: 0
+        });
+      });
+
+      const { latitude, longitude } = position.coords;
+
+      // Use Google Maps Geocoding API to get address
+      const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+      if (apiKey) {
+        try {
+          const response = await fetch(
+            `https://maps.googleapis.com/maps/api/geocode/json?latlng=${latitude},${longitude}&key=${apiKey}`
+          );
+          const data = await response.json();
+          
+          if (data.results && data.results[0]) {
+            setOrigin(data.results[0].formatted_address);
+            analytics.trackEvent('current_location_used', { latitude, longitude });
+          } else {
+            setOrigin(`${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
+          }
+        } catch (error) {
+          console.error('Geocoding error:', error);
+          setOrigin(`${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
+        }
+      } else {
+        setOrigin(`${latitude.toFixed(4)}, ${longitude.toFixed(4)}`);
+      }
+    } catch (error: any) {
+      console.error('Location error:', error);
+      if (error.code === 1) {
+        alert('Location access denied. Please enable location permissions.');
+      } else if (error.code === 2) {
+        alert('Location unavailable. Please try again.');
+      } else if (error.code === 3) {
+        alert('Location request timed out. Please try again.');
+      } else {
+        alert('Unable to get your location. Please enter manually.');
+      }
+    } finally {
+      setIsGettingLocation(false);
+    }
+  };
 
   const handleSearch = async () => {
     if (!origin || !destination) return;
@@ -155,16 +213,28 @@ const Sidebar: React.FC<SidebarProps> = ({ onRouteSearch }) => {
       {/* Search Section */}
       <div className="space-y-4">
         <div className="space-y-2 relative">
-          <div className="absolute left-4 top-1/2 -translate-y-1/2 opacity-40">
+          <div className="absolute left-4 top-1/2 -translate-y-1/2 opacity-40 z-10">
             <MapPin className="w-4 h-4" />
           </div>
           <input
             type="text"
             placeholder="Search Origin..."
-            className="w-full bg-[rgba(255,255,255,0.05)] border border-[rgba(255,255,255,0.1)] rounded-2xl py-4 pl-12 pr-4 focus:outline-none focus:border-accent transition-all font-sans"
+            className="w-full bg-[rgba(255,255,255,0.05)] border border-[rgba(255,255,255,0.1)] rounded-2xl py-4 pl-12 pr-12 focus:outline-none focus:border-accent transition-all font-sans"
             value={origin}
             onChange={(e) => setOrigin(e.target.value)}
           />
+          <button
+            onClick={getCurrentLocation}
+            disabled={isGettingLocation}
+            className="absolute right-3 top-1/2 -translate-y-1/2 p-2 hover:bg-accent/20 rounded-lg transition-all group"
+            title="Use current location"
+          >
+            {isGettingLocation ? (
+              <div className="w-4 h-4 border-2 border-accent border-t-transparent rounded-full animate-spin" />
+            ) : (
+              <Navigation className="w-4 h-4 text-accent group-hover:scale-110 transition-transform" />
+            )}
+          </button>
         </div>
 
         <div className="space-y-2 relative">
