@@ -21,14 +21,17 @@ interface RouteWithScore extends RouteAlternative {
 
 interface SidebarProps {
   onRouteSearch?: (origin: string, destination: string) => void;
+  onRoutesFound?: (routes: RouteWithScore[]) => void;
+  onRouteSelect?: (route: RouteWithScore) => void;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ onRouteSearch }) => {
+const Sidebar: React.FC<SidebarProps> = ({ onRouteSearch, onRoutesFound, onRouteSelect }) => {
   const [origin, setOrigin] = useState('');
   const [destination, setDestination] = useState('');
   const [isSearching, setIsSearching] = useState(false);
   const [isGettingLocation, setIsGettingLocation] = useState(false);
   const [routes, setRoutes] = useState<RouteWithScore[]>([]);
+  const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null);
   const [explanation, setExplanation] = useState('');
 
   const getCurrentLocation = async () => {
@@ -185,6 +188,12 @@ const Sidebar: React.FC<SidebarProps> = ({ onRouteSearch }) => {
       scoredRoutes.sort((a, b) => b.safetyScore - a.safetyScore);
 
       setRoutes(scoredRoutes);
+      setSelectedRouteId(scoredRoutes[0]?.id || null);
+
+      // Notify parent about routes
+      if (onRoutesFound) {
+        onRoutesFound(scoredRoutes);
+      }
 
       // Set explanation for top route
       if (scoredRoutes.length > 0) {
@@ -194,6 +203,14 @@ const Sidebar: React.FC<SidebarProps> = ({ onRouteSearch }) => {
       console.error('Search error:', error);
     } finally {
       setIsSearching(false);
+    }
+  };
+
+  const handleRouteSelect = (route: RouteWithScore) => {
+    setSelectedRouteId(route.id);
+    setExplanation(route.explanation);
+    if (onRouteSelect) {
+      onRouteSelect(route);
     }
   };
 
@@ -304,6 +321,8 @@ const Sidebar: React.FC<SidebarProps> = ({ onRouteSearch }) => {
                     eta={route.eta}
                     risk={route.riskLevel}
                     isRecommended={index === 0}
+                    isSelected={route.id === selectedRouteId}
+                    onClick={() => handleRouteSelect(route)}
                   />
                 ))}
               </div>

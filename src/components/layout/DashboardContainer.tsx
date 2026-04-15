@@ -5,9 +5,17 @@ interface DashboardContainerProps {
   children: React.ReactNode;
   origin?: string;
   destination?: string;
+  routes?: Array<{
+    id: string;
+    polyline: string;
+    safetyScore: number;
+    congestionLevel: number;
+    isOptimal?: boolean;
+  }>;
+  selectedRouteId?: string | null;
 }
 
-const DashboardContainer: React.FC<DashboardContainerProps> = ({ children, origin, destination }) => {
+const DashboardContainer: React.FC<DashboardContainerProps> = ({ children, origin, destination, routes, selectedRouteId }) => {
   return (
     <div className="flex h-screen w-full overflow-hidden bg-background text-foreground">
       {/* Sidebar Area */}
@@ -17,7 +25,7 @@ const DashboardContainer: React.FC<DashboardContainerProps> = ({ children, origi
 
       {/* Map Area */}
       <div className="flex-1 h-full relative bg-zinc-900">
-        <MapLayer origin={origin} destination={destination} />
+        <MapLayer origin={origin} destination={destination} routes={routes} selectedRouteId={selectedRouteId} />
         
         {/* Overlay elements for the map */}
         <div className="absolute top-6 right-6 z-20">

@@ -10,9 +10,11 @@ interface RouteCardProps {
   eta: string;
   risk: 'Low' | 'Medium' | 'High';
   isRecommended?: boolean;
+  onClick?: () => void;
+  isSelected?: boolean;
 }
 
-const RouteCard: React.FC<RouteCardProps> = ({ name, safetyScore, eta, risk, isRecommended }) => {
+const RouteCard: React.FC<RouteCardProps> = ({ name, safetyScore, eta, risk, isRecommended, onClick, isSelected }) => {
   const getRiskColor = (r: string) => {
     switch (r) {
       case 'Low': return 'text-green-400';
@@ -24,9 +26,10 @@ const RouteCard: React.FC<RouteCardProps> = ({ name, safetyScore, eta, risk, isR
 
   return (
     <div 
+      onClick={onClick}
       className={`relative glass-morphism p-5 rounded-3xl cursor-pointer transition-all duration-300 hover:scale-[1.02] ${
         isRecommended ? 'border-accent/40 bg-accent/5 gold-glow shadow-[0_0_20px_rgba(212,175,55,0.15)]' : 'hover:border-white/20'
-      }`}
+      } ${isSelected ? 'ring-2 ring-accent' : ''}`}
     >
       {isRecommended && (
         <div className="absolute -top-3 left-6 flex items-center gap-1.5 bg-accent text-background px-3 py-1 rounded-full text-[10px] font-black uppercase tracking-widest shadow-lg">

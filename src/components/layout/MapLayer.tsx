@@ -12,21 +12,22 @@ declare global {
 interface MapLayerProps {
   origin?: string;
   destination?: string;
-}
-
-interface GoogleMapsRoute {
-  legs?: Array<{
-    polyline?: {
-      encodedPolyline?: string;
-    };
+  routes?: Array<{
+    id: string;
+    polyline: string;
+    safetyScore: number;
+    congestionLevel: number;
+    isOptimal?: boolean;
   }>;
+  selectedRouteId?: string | null;
 }
 
-const MapLayer: React.FC<MapLayerProps> = ({ origin, destination }) => {
+const MapLayer: React.FC<MapLayerProps> = ({ origin, destination, routes, selectedRouteId }) => {
   const mapRef = useRef<HTMLDivElement>(null);
   const [mapLoaded, setMapLoaded] = useState(false);
   const [mapInstance, setMapInstance] = useState<google.maps.Map | null>(null);
-  const directionsRenderer = useRef<google.maps.DirectionsRenderer | null>(null);
+  const routePolylines = useRef<google.maps.Polyline[]>([]);
+  const markers = useRef<google.maps.Marker[]>([]);
 
   const initializeMap = useCallback(() => {
     if (!mapRef.current || !window.google?.maps?.Map) return;
@@ -46,28 +47,6 @@ const MapLayer: React.FC<MapLayerProps> = ({ origin, destination }) => {
         disableDefaultUI: true,
         zoomControl: true,
       });
-
-      // Suppress deprecation warnings for DirectionsRenderer
-      const originalWarn = console.warn;
-      console.warn = (...args: unknown[]) => {
-        const firstArg = args[0];
-        if (typeof firstArg === 'string' && firstArg.includes('DirectionsRenderer is deprecated')) return;
-        originalWarn.apply(console, args);
-      };
-
-      // Initialize DirectionsRenderer
-      directionsRenderer.current = new window.google.maps.DirectionsRenderer({
-        map: map,
-        suppressMarkers: false,
-        polylineOptions: {
-          strokeColor: '#D4AF37',
-          strokeWeight: 6,
-          strokeOpacity: 0.8
-        }
-      });
-
-      // Restore original console.warn
-      console.warn = originalWarn;
 
       setMapInstance(map);
       console.log('[Velora] Google Maps initialized successfully');
@@ -109,28 +88,42 @@ const MapLayer: React.FC<MapLayerProps> = ({ origin, destination }) => {
     };
   }, [initializeMap]);
 
-  const drawRouteFromPolyline = useCallback((route: GoogleMapsRoute) => {
-    if (!mapInstance || !window.google?.maps) return;
+  const clearMapRoutes = useCallback(() => {
+    // Clear existing polylines
+    routePolylines.current.forEach(polyline => polyline.setMap(null));
+    routePolylines.current = [];
+    
+    // Clear existing markers
+    markers.current.forEach(marker => marker.setMap(null));
+    markers.current = [];
+  }, []);
+
+  const getRouteColor = (safetyScore: number, isOptimal: boolean, isSelected: boolean, congestionLevel: number) => {
+    if (isOptimal && isSelected) {
+      return '#10B981'; // Green for optimal route
+    }
+    if (isSelected) {
+      return '#D4AF37'; // Gold for selected
+    }
+    
+    // Color based on congestion level
+    if (congestionLevel > 70) {
+      return '#EF4444'; // Red for high congestion
+    } else if (congestionLevel > 40) {
+      return '#F59E0B'; // Orange for medium congestion
+    } else {
+      return '#6B7280'; // Gray for low congestion
+    }
+  };
+
+  const drawMultipleRoutes = useCallback((routesToDraw: typeof routes) => {
+    if (!mapInstance || !window.google?.maps || !routesToDraw || routesToDraw.length === 0) return;
+
+    clearMapRoutes();
 
     try {
-      const polyline = route.legs?.[0]?.polyline?.encodedPolyline;
-      if (!polyline) {
-        console.warn('[Velora] No polyline data');
-        return;
-      }
-
-      // Decode polyline
-      const path = window.google.maps.geometry.encoding.decodePath(polyline);
-
-      // Draw polyline
-      new window.google.maps.Polyline({
-        path: path,
-        geodesic: true,
-        strokeColor: '#D4AF37',
-        strokeOpacity: 0.8,
-        strokeWeight: 6,
-        map: mapInstance
-      });
+      const bounds = new window.google.maps.LatLngBounds();
+      let hasValidRoute = false;
 
       // Suppress marker deprecation warnings
       const originalWarn = console.warn;
@@ -143,162 +136,101 @@ const MapLayer: React.FC<MapLayerProps> = ({ origin, destination }) => {
         originalWarn.apply(console, args);
       };
 
-      // Add markers
-      if (path.length > 0) {
-        new window.google.maps.Marker({
-          position: path[0],
-          map: mapInstance,
-          title: 'Origin',
-          label: 'A'
-        });
+      routesToDraw.forEach((route, index) => {
+        if (!route.polyline) return;
 
-        new window.google.maps.Marker({
-          position: path[path.length - 1],
-          map: mapInstance,
-          title: 'Destination',
-          label: 'B'
-        });
+        try {
+          const path = window.google.maps.geometry.encoding.decodePath(route.polyline);
+          if (path.length === 0) return;
 
-        // Fit bounds
-        const bounds = new window.google.maps.LatLngBounds();
-        path.forEach((point: google.maps.LatLng) => bounds.extend(point));
-        mapInstance.fitBounds(bounds);
-      }
+          hasValidRoute = true;
+          const isOptimal = index === 0;
+          const isSelected = route.id === selectedRouteId;
+          const color = getRouteColor(route.safetyScore, isOptimal, isSelected, route.congestionLevel);
+
+          // Draw polyline
+          const polyline = new window.google.maps.Polyline({
+            path: path,
+            geodesic: true,
+            strokeColor: color,
+            strokeOpacity: isSelected ? 0.9 : 0.5,
+            strokeWeight: isSelected ? 8 : 5,
+            map: mapInstance,
+            zIndex: isSelected ? 1000 : (isOptimal ? 100 : 10)
+          });
+
+          routePolylines.current.push(polyline);
+
+          // Add to bounds
+          path.forEach((point: google.maps.LatLng) => bounds.extend(point));
+
+          // Add markers only for the selected route
+          if (isSelected && path.length > 0) {
+            const originMarker = new window.google.maps.Marker({
+              position: path[0],
+              map: mapInstance,
+              title: 'Origin',
+              label: {
+                text: 'A',
+                color: '#FFFFFF',
+                fontWeight: 'bold'
+              },
+              icon: {
+                path: window.google.maps.SymbolPath.CIRCLE,
+                scale: 10,
+                fillColor: color,
+                fillOpacity: 1,
+                strokeColor: '#FFFFFF',
+                strokeWeight: 2
+              }
+            });
+
+            const destMarker = new window.google.maps.Marker({
+              position: path[path.length - 1],
+              map: mapInstance,
+              title: 'Destination',
+              label: {
+                text: 'B',
+                color: '#FFFFFF',
+                fontWeight: 'bold'
+              },
+              icon: {
+                path: window.google.maps.SymbolPath.CIRCLE,
+                scale: 10,
+                fillColor: color,
+                fillOpacity: 1,
+                strokeColor: '#FFFFFF',
+                strokeWeight: 2
+              }
+            });
+
+            markers.current.push(originMarker, destMarker);
+          }
+        } catch (err) {
+          console.error('[Velora] Error drawing route:', err);
+        }
+      });
 
       // Restore console.warn
       console.warn = originalWarn;
-    } catch (err) {
-      console.error('[Velora] Error drawing route:', err);
-    }
-  }, [mapInstance]);
 
-  // Fallback: Draw simple line when Directions API is not available
-  const drawSimpleLine = useCallback(async (originAddr: string, destinationAddr: string) => {
-    if (!mapInstance || !window.google?.maps) return;
-
-    try {
-      const geocoder = new window.google.maps.Geocoder();
-      
-      // Geocode origin
-      const originResult = await new Promise<google.maps.LatLng | null>((resolve) => {
-        geocoder.geocode({ address: originAddr }, (results, status) => {
-          if (status === 'OK' && results && results[0]) {
-            resolve(results[0].geometry.location);
-          } else {
-            resolve(null);
-          }
-        });
-      });
-
-      // Geocode destination
-      const destResult = await new Promise<google.maps.LatLng | null>((resolve) => {
-        geocoder.geocode({ address: destinationAddr }, (results, status) => {
-          if (status === 'OK' && results && results[0]) {
-            resolve(results[0].geometry.location);
-          } else {
-            resolve(null);
-          }
-        });
-      });
-
-      if (originResult && destResult) {
-        // Draw line
-        new window.google.maps.Polyline({
-          path: [originResult, destResult],
-          geodesic: true,
-          strokeColor: '#D4AF37',
-          strokeOpacity: 0.8,
-          strokeWeight: 6,
-          map: mapInstance
-        });
-
-        // Suppress marker deprecation warnings
-        const originalWarn = console.warn;
-        console.warn = (...args: unknown[]) => {
-          const firstArg = args[0];
-          if (typeof firstArg === 'string' && (
-            firstArg.includes('google.maps.Marker is deprecated') ||
-            firstArg.includes('AdvancedMarkerElement')
-          )) return;
-          originalWarn.apply(console, args);
-        };
-
-        // Add markers
-        new window.google.maps.Marker({
-          position: originResult,
-          map: mapInstance,
-          title: 'Origin',
-          label: 'A'
-        });
-
-        new window.google.maps.Marker({
-          position: destResult,
-          map: mapInstance,
-          title: 'Destination',
-          label: 'B'
-        });
-
-        // Restore console.warn
-        console.warn = originalWarn;
-
-        // Fit bounds
-        const bounds = new window.google.maps.LatLngBounds();
-        bounds.extend(originResult);
-        bounds.extend(destResult);
+      // Fit bounds if we have valid routes
+      if (hasValidRoute) {
         mapInstance.fitBounds(bounds);
-
-        console.log('[Velora] Showing direct line (Directions API not enabled)');
       }
+
+      console.log(`[Velora] Displayed ${routesToDraw.length} routes on map`);
     } catch (err) {
-      console.error('[Velora] Error drawing fallback line:', err);
+      console.error('[Velora] Error drawing multiple routes:', err);
     }
-  }, [mapInstance]);
+  }, [mapInstance, selectedRouteId, clearMapRoutes]);
 
-  const fetchAndDrawRoute = useCallback(async (originAddr: string, destinationAddr: string) => {
-    const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
-    if (!apiKey) return;
-
-    try {
-      const response = await fetch('https://routes.googleapis.com/directions/v2:computeRoutes', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Goog-Api-Key': apiKey,
-          'X-Goog-FieldMask': 'routes.legs.polyline,routes.distanceMeters,routes.duration'
-        },
-        body: JSON.stringify({
-          origin: { address: originAddr },
-          destination: { address: destinationAddr },
-          travelMode: 'DRIVE',
-          computeAlternativeRoutes: false
-        })
-      });
-
-      if (!response.ok) {
-        console.warn('[Velora] Routes API not available, using fallback visualization');
-        await drawSimpleLine(originAddr, destinationAddr);
-        return;
-      }
-
-      const data = await response.json();
-      if (data.routes && data.routes[0]) {
-        drawRouteFromPolyline(data.routes[0]);
-        console.log('[Velora] Route displayed using Routes API');
-      } else {
-        await drawSimpleLine(originAddr, destinationAddr);
-      }
-    } catch (err) {
-      console.warn('[Velora] Routes API error, using fallback');
-      await drawSimpleLine(originAddr, destinationAddr);
-    }
-  }, [drawRouteFromPolyline, drawSimpleLine]);
-
-  // Update map when origin/destination changes
+  // Update map when routes change
   useEffect(() => {
-    if (!mapInstance || !window.google?.maps || !origin || !destination) return;
+    if (!mapInstance || !window.google?.maps || !routes || routes.length === 0) return;
 
-    fetchAndDrawRoute(origin, destination);
-  }, [mapInstance, origin, destination, fetchAndDrawRoute]);
+    drawMultipleRoutes(routes);
+  }, [mapInstance, routes, selectedRouteId, drawMultipleRoutes]);
 
   return (
     <div className="w-full h-full relative bg-[#1A1D23] overflow-hidden">
